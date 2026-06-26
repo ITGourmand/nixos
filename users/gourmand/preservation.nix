@@ -3,7 +3,7 @@ let
   username = "gourmand";
   customDirs = [
     "Téléchargements" "Documents" "Images" "Bureau" "Projets"
-    ".config" ".local/share" ".local/state"
+    ".config" ".local/share" ".local/state" ".local/script"
     ".vscode" ".vscode-shared" ".copilot"
   ];
   secureDirs = [
