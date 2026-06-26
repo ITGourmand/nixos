@@ -30,6 +30,7 @@ let
   ];
 
   ntfsDrives = builtins.filter (d: d.fsType == "ntfs3") additionalDrives;
+  windowsFsTypes = [ "ntfs3" "vfat" "exfat" ];
 in
 {
   # 1. Interface graphique & Session Manager
@@ -72,19 +73,12 @@ in
   security.polkit.enable = true;
   services.gvfs.enable = true;
   
+  # Le nettoyeur de secours (uniquement pour le NTFS)
   systemd.services.ntfsfix-before-mount = {
     description = "Nettoyer automatiquement le dirty bit des disques NTFS avant montage";
     wantedBy = [ "local-fs.target" ];
-    
-    # Dit à systemd de s'exécuter impérativement AVANT les points de montage de tes disques
     before = map (d: "mnt-${d.name}.mount") ntfsDrives;
-    
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-    };
-
-    # Applique ntfsfix de manière sécurisée
+    serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
     script = builtins.concatStringsSep "\n" (
       map (d: "${pkgs.ntfs3g}/bin/ntfsfix -d /dev/disk/by-id/${d.id} || true") ntfsDrives
     );
@@ -101,7 +95,8 @@ in
     value = {
       device = "/dev/disk/by-id/${d.id}";
       fsType = d.fsType;
-      options = [ "rw" "uid=1000" "nofail" "x-gvfs-show" ];
+      options = [ "rw" "nofail" "x-gvfs-show" ] 
+                ++ (if builtins.elem d.fsType windowsFsTypes then [ "uid=1000" ] else []);
     };
   }) additionalDrives);
 }
