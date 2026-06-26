@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, lib,... }:
 let
   mesScripts = with pkgs; [
     (writeScriptBin "nix-switch" ''
@@ -31,17 +31,13 @@ let
   ];
 in
 {
-  # Désactive les alias de base de NixOS
-  programs.bash.interactiveShellInit = ''
-    unalias l ls 2>/dev/null || true
-  '';
 
   environment.systemPackages = with pkgs; [
     git
     tree
   ] ++ mesScripts;
 
-  environment.shellAliases = {
+  environment.shellAliases = lib.mkForce {
     # nix-switch = "sudo git -C /etc/nixos add . && sudo nixos-rebuild switch --flake /etc/nixos && sudo systemctl start nix-clean-by-count.service";
     nix-list  = "sudo nix-env --list-generations --profile /nix/var/nix/profiles/system";
     nix-clean = "sudo nix-collect-garbage --delete-older-than 3d && sudo nix-store --optimise";
