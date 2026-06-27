@@ -23,6 +23,11 @@
     "cups" = { name = "Interface Web de CUPS"; noDisplay = true; };
   };
 
+  programs.direnv = {
+    enable = true;
+    nix-direnv.enable = true;
+  };
+
   xdg.mimeApps = {
     enable = true;
     defaultApplications = {

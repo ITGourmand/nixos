@@ -40,6 +40,7 @@ in
     wayland.enable = true;
   };
   services.desktopManager.plasma6.enable = true;
+  services.displayManager.sddm.autoNumlock = true;
 
   # Nettoyage des bloatwares KDE par défaut
   services.xserver.excludePackages = [ pkgs.xterm ];

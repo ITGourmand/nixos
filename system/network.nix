@@ -2,19 +2,20 @@
 
   networking.hostName = hostname;
   networking.networkmanager.enable = true;
+  networking.networkmanager.dns = "none";
 
-  # Configure network proxy if necessary
-  # networking.proxy.default = "http://user:password@proxy:port/";
-  # networking.proxy.noProxy = "127.0.0.1,localhost,internal.domain";
+  # 1. Configuration des DNS de Google (IPv4)
+  networking.nameservers = [ "8.8.8.8" "8.8.4.4" ];
+  
+  # Optionnel : Force NetworkManager à injecter ces DNS en priorité
+  networking.networkmanager.insertNameservers = [ "8.8.8.8" "8.8.4.4" ];
 
-  # Enable the OpenSSH daemon.
-  # services.openssh.enable = true;
-
-  # Open ports in the firewall.
-  # networking.firewall.allowedTCPPorts = [ ... ];
-  # networking.firewall.allowedUDPPorts = [ ... ];
-  # Or disable the firewall altogether.
-  # networking.firewall.enable = false;
-
+  # 2. Activation et configuration du Firewall
+  networking.firewall.enable = true;
+  
+  # Par défaut, le pare-feu bloque tout le trafic entrant inutile.
+  # Si vous avez besoin d'ouvrir des ports spécifiques (ex: SSH, Syncthing, etc.), décommentez et remplissez ici :
+  # networking.firewall.allowedTCPPorts = [ 22 ]; # Exemple : ouvre le port 22 pour le SSH
+  # networking.firewall.allowedUDPPorts = [ ];
 
 }
