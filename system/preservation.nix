@@ -11,6 +11,7 @@
         "/var/lib/nixos"
         "/var/lib/sddm"
         "/var/lib/AccountsService"
+        "/var/lib/power-profiles-daemon"
         { directory = "/etc/NetworkManager/system-connections"; mode = "0700"; }
         "/etc/nixos"
         { directory = "/root/.ssh"; mode = "0700"; }
