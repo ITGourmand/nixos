@@ -41,6 +41,7 @@ in
   };
   services.desktopManager.plasma6.enable = true;
   services.displayManager.sddm.autoNumlock = true;
+  services.gnome.file-roller.enable = true;
 
   # Nettoyage des bloatwares KDE par défaut
   services.xserver.excludePackages = [ pkgs.xterm ];

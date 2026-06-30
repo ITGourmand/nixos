@@ -2,7 +2,7 @@
 let
   username = "gourmand";
   customDirs = [
-    "Téléchargements" "Documents" "Images" "Bureau" "Projets"
+    "Documents" "Images" "Bureau" "Projets" "Jeux"
     ".config" ".local/share" ".local/state" ".local/script"
     ".vscode" ".vscode-shared" ".copilot"
   ];

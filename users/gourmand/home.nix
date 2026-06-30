@@ -10,12 +10,14 @@
     python3
     qpwgraph
     fastfetch
-    nemo
-    nemo-fileroller
+    nemo-with-extensions
     file-roller
     nixd
-    nixfmt-rfc-style
+    nixfmt
     vlc
+    prismlauncher
+    steam
+    umu-launcher
   ];
 
   xdg.desktopEntries = {
@@ -46,6 +48,8 @@
       "application/xml" = [ "geany.desktop" ];
     };
   };
+
+  services.gnome.file-roller.enable = true;
 
   programs.bash = {
     enable = true;
