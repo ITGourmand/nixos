@@ -1,5 +1,6 @@
 { config, ... }: {
   hardware.graphics.enable = true;
+  hardware.graphics.enable32Bit = true;
   services.xserver.videoDrivers = [ "nvidia" ];
   
   # Early KMS pour éviter le freeze au boot

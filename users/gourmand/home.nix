@@ -1,9 +1,20 @@
-{ pkgs, ... }: {
+{ pkgs, ... }:
+
+let
+  pkgs-fixed = pkgs.extend (final: prev: {
+    file-roller = prev.file-roller.overrideAttrs (oldAttrs: {
+      nativeBuildInputs = (oldAttrs.nativeBuildInputs or [ ]) ++ [ prev.makeWrapper ];
+      postFixup = (oldAttrs.postFixup or "") + ''
+        wrapProgram $out/bin/file-roller --set GDK_BACKEND x11
+      '';
+    });
+  });
+in {
 
   imports = [ ./alias.nix ];
 
   
-  home.packages = with pkgs; [
+  home.packages = with pkgs-fixed; [
     google-chrome
     vscode
     geany
@@ -12,13 +23,17 @@
     fastfetch
     nemo-with-extensions
     file-roller
+    p7zip
     nixd
     nixfmt
     vlc
     prismlauncher
     steam
     umu-launcher
+    heroic
+    antigravity
   ];
+  
 
   xdg.desktopEntries = {
     "org.kde.kwalletmanager" = { name = "KWalletManager"; noDisplay = true; };
@@ -48,8 +63,6 @@
       "application/xml" = [ "geany.desktop" ];
     };
   };
-
-  services.gnome.file-roller.enable = true;
 
   programs.bash = {
     enable = true;
