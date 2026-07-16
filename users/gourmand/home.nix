@@ -32,8 +32,16 @@ in {
     umu-launcher
     heroic
     antigravity
-  ];
-  
+
+    icoutils
+  ];  
+
+  xdg.dataFile."thumbnailers/exe.thumbnailer".text = ''
+    [Thumbnailer Entry]
+    TryExec=${pkgs.icoutils}/bin/wrestool
+    Exec=exe-thumbnailer %i %o
+    MimeType=application/vnd.microsoft.portable-executable;application/x-ms-dos-executable;application/x-msdownload;
+  '';
 
   xdg.desktopEntries = {
     "org.kde.kwalletmanager" = { name = "KWalletManager"; noDisplay = true; };

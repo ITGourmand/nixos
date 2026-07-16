@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+find . -type f -name "*.nix" | while read -r file; do
+    echo "$file:"
+    cat "$file"
+    echo
+done
