@@ -27,12 +27,13 @@ in {
     nixd
     nixfmt
     vlc
+    discord
     prismlauncher
     steam
     umu-launcher
     heroic
     antigravity
-
+    
     icoutils
   ];  
 

@@ -21,9 +21,10 @@
     (pkgs.writeShellScriptBin "setup-env" (builtins.readFile ./scripts/setup-env.sh))
 
     # 4. sumu-run
-    (pkgs.writeShellApplication {
+	(pkgs.writeShellApplication {
       name = "sumu-run";
       runtimeInputs = [ pkgs.bubblewrap pkgs.coreutils pkgs.umu-launcher pkgs.xdg-dbus-proxy pkgs.procps ];
+      excludeShellChecks = [ "SC2329" ];
       text = builtins.readFile ./scripts/sumu-run.sh;
     })
   ];
