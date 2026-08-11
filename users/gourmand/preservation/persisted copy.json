@@ -1,0 +1,33 @@
+{
+    "directories": {
+        "custom": [
+            "Documents",
+            "Images",
+            "Bureau",
+            "Projets",
+            "Jeux",
+            "Android",
+            "Download",
+            ".config",
+            ".local/share",
+            ".local/state",
+            ".local/script",
+            ".vscode",
+            ".vscode-shared",
+            ".copilot",
+            ".android",
+            "Games"
+        ],
+        "secure": [
+            ".ssh",
+            ".local/share/keyrings"
+        ]
+    },
+    "files": {
+        "custom": [
+            ".gitconfig",
+            ".nvidia-settings-rc"
+        ],
+        "secure": []
+    }
+}

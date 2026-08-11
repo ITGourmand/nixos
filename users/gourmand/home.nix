@@ -32,7 +32,8 @@ in {
     steam
     umu-launcher
     heroic
-    antigravity
+    antigravity-ide
+    android-studio
     
     icoutils
   ];  

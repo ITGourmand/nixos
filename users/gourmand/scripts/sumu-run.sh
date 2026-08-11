@@ -9,7 +9,12 @@ ALLOW_NET=false
 ALLOW_X11=false
 ALLOW_INPUT=false
 UNRESTRICTED=false
-EXTRA_PATHS=()
+KEEP_PREFIX=false
+AUTO_DRIVES=true
+MANUAL_DRIVES=()
+DRIVE_MAP=()
+PERSIST_PATHS=()
+TEMP_PATHS=()
 UMU_ARGS=()
 
 usage() {
@@ -20,7 +25,12 @@ Options:
   -i, --internet       Allow network access (e.g., for first launch / updates)
   -x, --x11            Allow access to X11 display server (discouraged if Wayland is available)
       --input          Expose /dev/input and /run/udev (required for gamepads/controllers)
-  -p, --path <path>    Allow read/write access to a custom path (repeatable)
+  -k, --keep-prefix    Makes WINEPREFIX/umu caches PERSISTENT (saves retained).
+                       By default, the prefix is a disposable overlay.
+  -p, --path <path>    Mounts <path> for read/REAL-WRITE (persistent)
+  -w, --workdir <path> Mounts <path> as a TEMPORARY overlay (writes are lost upon closing). Default: -w "."
+  -D, --drive <L=/p>   Maps a Wine drive letter to <path> (mounted as persistent RW)
+      --no-drives      Disables automatic drive letter creation for /mnt, /media, etc.
   -a, --all            Disable sandboxing (runs umu-run directly)
   -h, --help           Display this help message
 EOF
@@ -30,13 +40,26 @@ EOF
 # Parse CLI arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -i|--internet) ALLOW_NET=true; shift ;;
-        -x|--x11)      ALLOW_X11=true; shift ;;
-        --input)       ALLOW_INPUT=true; shift ;;
-        -a|--all)      UNRESTRICTED=true; shift ;;
+        -i|--internet)    ALLOW_NET=true; shift ;;
+        -x|--x11)         ALLOW_X11=true; shift ;;
+        --input)          ALLOW_INPUT=true; shift ;;
+        -k|--keep-prefix) KEEP_PREFIX=true; shift ;;
+        -a|--all)         UNRESTRICTED=true; shift ;;
+        --no-drives)      AUTO_DRIVES=false; shift ;;
+        -D|--drive)
+            [[ -z "${2:-}" ]] && { echo "Error: --drive requires LETTER=/path." >&2; exit 1; }
+            [[ "$2" =~ ^[A-Za-z]=.+ ]] || { echo "Error: format attendu: -D G=/mnt/TO" >&2; exit 1; }
+            drive_letter="${2%%=*}"
+            drive_path="${2#*=}"
+            MANUAL_DRIVES+=("${drive_letter,,}=$drive_path")
+            PERSIST_PATHS+=("$(realpath -m -- "$drive_path")")
+            shift 2 ;;
         -p|--path)
             [[ -z "${2:-}" ]] && { echo "Error: --path requires an argument." >&2; exit 1; }
-            EXTRA_PATHS+=("$2"); shift 2 ;;
+            PERSIST_PATHS+=("$(realpath -m -- "$2")"); shift 2 ;;
+        -w|--workdir)
+            [[ -z "${2:-}" ]] && { echo "Error: --workdir requires an argument." >&2; exit 1; }
+            TEMP_PATHS+=("$(realpath -m -- "$2")"); shift 2 ;;
         -h|--help) usage ;;
         --) shift; UMU_ARGS=("$@"); break ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -65,6 +88,10 @@ if [[ -u "$BWRAP_BIN" ]]; then
     exit 1
 fi
 
+# Détection du support --tmp-overlay par bwrap
+HAS_TMP_OVERLAY=false
+"$BWRAP_BIN" --help 2>&1 | grep -q -- '--tmp-overlay' && HAS_TMP_OVERLAY=true
+
 XDG_DBUS_PROXY_BIN="$(type -P xdg-dbus-proxy || true)"
 
 # Capture host environment
@@ -80,6 +107,7 @@ if [[ ! -d "$REAL_XDG_RUNTIME_DIR" ]]; then
 fi
 
 # Create disposable temporary directories
+OVERLAY_DIR=$(mktemp -d /tmp/sumu-ovl.XXXXXX)
 SANDBOX_HOME=$(mktemp -d /tmp/sumu-home.XXXXXX)
 DBUS_PROXY_DIR=$(mktemp -d /tmp/sumu-dbus.XXXXXX)
 FAKE_USR=$(mktemp -d /tmp/sumu-usr.XXXXXX)
@@ -127,7 +155,7 @@ cleanup() {
         wait "$DBUS_PROXY_PID" 2>/dev/null || true
     fi
 
-    rm -rf -- "$SANDBOX_HOME" "$DBUS_PROXY_DIR" "$FAKE_USR" 2>/dev/null || true
+    rm -rf -- "$SANDBOX_HOME" "$DBUS_PROXY_DIR" "$FAKE_USR" "$OVERLAY_DIR" 2>/dev/null || true
     exit "$rc"
 }
 
@@ -135,6 +163,45 @@ trap 'cleanup $?' EXIT
 trap 'cleanup 129' HUP
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
+
+# --- HELPERS DE MONTAGE ---
+declare -a MOUNT_ARGS=()
+
+path_covered() {
+    local q="$1" p
+    local all_paths=("${PERSIST_PATHS[@]}" "${TEMP_PATHS[@]}")
+    for p in "${all_paths[@]}"; do
+        [[ "$q" == "$p" || "$q" == "$p"/* || "$p" == "$q"/* ]] && return 0
+    done
+    return 1
+}
+
+add_persist() { MOUNT_ARGS+=(--bind "$1" "$1"); }
+add_ro()      { MOUNT_ARGS+=(--ro-bind "$1" "$1"); }
+
+add_temp() {
+    local src="$1" ov
+    if [[ ! -d "$src" ]]; then
+        ov="$OVERLAY_DIR/f-$(printf '%s' "$src" | md5sum | cut -c1-16)"
+        cp -a --reflink=auto -- "$src" "$ov" 2>/dev/null || cp -a -- "$src" "$ov" 2>/dev/null || { add_ro "$src"; return; }
+        MOUNT_ARGS+=(--bind "$ov" "$src")
+        return
+    fi
+    if [[ "$HAS_TMP_OVERLAY" == true ]]; then
+        MOUNT_ARGS+=(--overlay-src "$src" --tmp-overlay "$src")
+    else
+        ov="$OVERLAY_DIR/d-$(printf '%s' "$src" | md5sum | cut -c1-16)"
+        mkdir -p "$ov/upper" "$ov/work"
+        MOUNT_ARGS+=(--overlay-src "$src" --overlay "$ov/upper" "$ov/work" "$src")
+    fi
+}
+
+warn_dangerous() {
+    case "$1" in
+        /|/etc|/etc/*|/run|/run/*|/proc|/proc/*|/sys|/sys/*|/nix|/nix/*|"$REAL_HOME")
+            echo "Warning: Mounting '$1' significantly reduces sandbox security." >&2 ;;
+    esac
+}
 
 # --- SECTION 1: Filtered D-Bus Proxy (Portals only) ---
 FAKE_DBUS_SOCKET="$DBUS_PROXY_DIR/bus"
@@ -170,22 +237,44 @@ fi
 # --- SECTION 2: UMU / Proton Directory Binds ---
 mkdir -p "$SANDBOX_HOME"/{.config,.cache,.local/share,.local/state}
 
-declare -a UMU_BINDS=()
-for umu_path in \
-    ".steam" \
-    ".local/share/Steam" \
-    ".local/share/Steam/compatibilitytools.d" \
-    ".local/share/umu" \
-    "Games/umu" \
-    ".cache/umu"; do
-    if [[ -d "$REAL_HOME/$umu_path" ]]; then
-        mkdir -p "$SANDBOX_HOME/$umu_path"
-        UMU_BINDS+=(--bind "$REAL_HOME/$umu_path" "$REAL_HOME/$umu_path")
+# 2.a Runtimes Steam / compat tools : LECTURE SEULE
+for ro_path in ".steam" ".local/share/Steam" ".local/share/Steam/compatibilitytools.d"; do
+    tgt="$REAL_HOME/$ro_path"
+    [[ -d "$tgt" ]] || continue
+    path_covered "$tgt" && continue
+    mkdir -p "$SANDBOX_HOME/$ro_path"
+    add_ro "$tgt"
+done
+
+# 2.b Runtime umu + cache : écriture nécessaire pour màj du runtime
+for rw_path in ".local/share/umu" ".cache/umu"; do
+    tgt="$REAL_HOME/$rw_path"
+    path_covered "$tgt" && continue
+    if [[ "$KEEP_PREFIX" == true ]]; then
+        mkdir -p "$tgt" "$SANDBOX_HOME/$rw_path"
+        add_persist "$tgt"
+    elif [[ -d "$tgt" ]]; then
+        mkdir -p "$SANDBOX_HOME/$rw_path"
+        add_temp "$tgt"
     fi
 done
 
+# 2.c WINEPREFIX : jetable par défaut
+PREFIX_TGT="${WINEPREFIX:-$REAL_HOME/Games/umu}"
+if ! path_covered "$PREFIX_TGT"; then
+    if [[ "$KEEP_PREFIX" == true ]]; then
+        mkdir -p "$PREFIX_TGT"
+        mkdir -p "$SANDBOX_HOME/${PREFIX_TGT#"$REAL_HOME"/}" 2>/dev/null || true
+        add_persist "$PREFIX_TGT"
+    elif [[ -d "$PREFIX_TGT" ]]; then
+        mkdir -p "$SANDBOX_HOME/${PREFIX_TGT#"$REAL_HOME"/}" 2>/dev/null || true
+        add_temp "$PREFIX_TGT"
+        echo "Info: WINEPREFIX '$PREFIX_TGT' en overlay jetable (sauvegardes perdues à la fermeture)." >&2
+        echo "      Utilise -k, ou -p '$PREFIX_TGT', pour le rendre persistant." >&2
+    fi
+fi
+
 # --- SECTION 3: Bubblewrap Arguments Construction ---
-# /!\ On NE MET PAS --unshare-all : on garde le namespace IPC (MIT-SHM X11) et le namespace user par défaut
 BWRAP_ARGS=(
     --die-with-parent
     --new-session
@@ -206,7 +295,7 @@ BWRAP_ARGS+=(
 
     --dev /dev
     --perms 1777 --tmpfs /dev/shm
-    --perms 1777 --tmpfs /tmp
+    --perms 1777 --size "${SUMU_TMPFS_SIZE:-$((8*1024*1024*1024))}" --tmpfs /tmp
 
     --tmpfs /var
     --tmpfs /srv
@@ -230,11 +319,10 @@ BWRAP_ARGS+=(
     --bind "$SANDBOX_HOME" "$REAL_HOME"
     --setenv HOME "$REAL_HOME"
 
-    # CWD (doit être monté APRÈS /home pour ne pas être écrasé)
-    --bind-try "$PWD" "$PWD"
+    # CWD
     --chdir "$PWD"
 
-    # Structure FHS factice (fix NixOS : /usr /lib /lib64 /bin /sbin n'existent pas nativement)
+    # Structure FHS factice
     --bind "$FAKE_USR" /usr
     --bind "$FAKE_USR/lib" /lib
     --bind "$FAKE_USR/lib64" /lib64
@@ -401,26 +489,162 @@ for var in GAMEID STORE PROTONPATH WINEPREFIX UMU_ID PROTON_VERB STEAM_EXTRA_COM
     fi
 done
 
-# --- SECTION 10: Custom User Mounts (-p) ---
-for p in "${EXTRA_PATHS[@]}"; do
-    ABS_PATH="$(realpath -m -- "$p")"
+# --- SECTION 10: Custom User Mounts (-p persistant / -w temporaire) ---
+CWD_ABS="$(realpath -m -- "$PWD")"
+cwd_handled=false
+all_user_paths=("${PERSIST_PATHS[@]}" "${TEMP_PATHS[@]}")
+for p in "${all_user_paths[@]}"; do
+    if [[ "$CWD_ABS" == "$p" || "$CWD_ABS" == "$p"/* ]]; then cwd_handled=true; break; fi
+done
+[[ "$cwd_handled" == false ]] && TEMP_PATHS+=("$CWD_ABS")
+
+# Tri lexicographique
+if ((${#PERSIST_PATHS[@]})); then
+    mapfile -t PERSIST_PATHS < <(printf '%s\n' "${PERSIST_PATHS[@]}" | sort -u)
+fi
+if ((${#TEMP_PATHS[@]})); then
+    mapfile -t TEMP_PATHS < <(printf '%s\n' "${TEMP_PATHS[@]}" | sort -u)
+fi
+
+# Application des montages utilisateur
+for ABS_PATH in "${PERSIST_PATHS[@]}"; do
     if [[ ! -e "$ABS_PATH" ]]; then
-        echo "Warning: Path '$p' does not exist, skipping." >&2
-        continue
+        mkdir -p -- "$ABS_PATH" 2>/dev/null || {
+            echo "Warning: Path '$ABS_PATH' does not exist and cannot be created, skipping." >&2
+            continue; }
     fi
-
-    case "$ABS_PATH" in
-        /|/etc|/etc/*|/run|/run/*|/proc|/proc/*|/sys|/sys/*|"$REAL_HOME")
-            echo "Warning: Mounting '$ABS_PATH' significantly reduces sandbox security." >&2
-            ;;
-    esac
-
-    BWRAP_ARGS+=(--bind "$ABS_PATH" "$ABS_PATH")
+    warn_dangerous "$ABS_PATH"
+    [[ -w "$ABS_PATH" ]] || echo "Warning: '$ABS_PATH' is not writable by the current user." >&2
+    add_persist "$ABS_PATH"
 done
 
+for ABS_PATH in "${TEMP_PATHS[@]}"; do
+    if [[ ! -e "$ABS_PATH" ]]; then
+        echo "Warning: Path '$ABS_PATH' does not exist, skipping." >&2
+        continue
+    fi
+    warn_dangerous "$ABS_PATH"
+    add_temp "$ABS_PATH"
+done
+
+# --- SECTION 10.b: Lettres de lecteur Wine pour les vrais montages ---
+path_is_bound() {
+    local q="$1" p
+    for p in "${PERSIST_PATHS[@]}" "${TEMP_PATHS[@]}"; do
+        [[ "$q" == "$p" || "$q" == "$p"/* ]] && return 0
+    done
+    return 1
+}
+
+mount_point_of() {
+    findmnt -n -o TARGET --target "$1" 2>/dev/null | tail -n1
+}
+
+drive_target_for() {
+    local p="$1" mp
+    mp="$(mount_point_of "$p")"
+    if [[ -n "$mp" && "$mp" != "/" ]] && path_is_bound "$mp"; then
+        printf '%s' "$mp"
+    else
+        printf '%s' "$p"
+    fi
+}
+
+declare -A DRIVE_USED=( [c]=1 [z]=1 )
+declare -A DRIVE_SEEN=()
+
+# Lettres imposées par l'utilisateur (-D)
+for md in "${MANUAL_DRIVES[@]}"; do
+    l="${md%%=*}"; t="$(realpath -m -- "${md#*=}")"
+    DRIVE_USED["$l"]=1
+    DRIVE_SEEN["$t"]="$l"
+    DRIVE_MAP+=("$l=$t")
+done
+
+if [[ "$AUTO_DRIVES" == true ]]; then
+    for p in "${PERSIST_PATHS[@]}" "${TEMP_PATHS[@]}"; do
+        mp="$(mount_point_of "$p")"
+        case "$p" in
+            /mnt|/mnt/*|/media/*|/run/media/*) ;;
+            *) [[ -n "$mp" && "$mp" != "/" ]] || continue ;;
+        esac
+
+        tgt="$(drive_target_for "$p")"
+        [[ -n "${DRIVE_SEEN[$tgt]:-}" ]] && continue
+
+        letter=""
+        for l in g h i j k l m n o p q r s t u v w x y d e f; do
+            [[ -z "${DRIVE_USED[$l]:-}" ]] && { letter="$l"; break; }
+        done
+        [[ -z "$letter" ]] && { echo "Warning: plus de lettre libre pour '$tgt'." >&2; continue; }
+
+        DRIVE_USED["$letter"]=1
+        DRIVE_SEEN["$tgt"]="$letter"
+        DRIVE_MAP+=("$letter=$tgt")
+    done
+fi
+
+SUMU_DRIVES=""
+if ((${#DRIVE_MAP[@]})); then
+    SUMU_DRIVES="$(IFS='|'; printf '%s' "${DRIVE_MAP[*]}")"
+    for d in "${DRIVE_MAP[@]}"; do
+        echo "Info: lecteur Wine ${d%%=*}: -> ${d#*=} (espace disque réel)" >&2
+    done
+fi
+
+# Injection des variables d'environnement Wine dans Bwrap
+BWRAP_ARGS+=(
+    --setenv WINEPREFIX "$PREFIX_TGT"
+    --setenv SUMU_DRIVES "$SUMU_DRIVES"
+)
+
+# Script d'initialisation des dosdevices à exécuter dans le sandbox
+INIT_SCRIPT="$SANDBOX_HOME/.sumu-init.sh"
+cat > "$INIT_SCRIPT" <<'EOS'
+#!/usr/bin/env bash
+set -u
+
+prefix="${WINEPREFIX:-}"
+drives="${SUMU_DRIVES:-}"
+
+link_drives() {
+    local dd="$prefix/dosdevices" entry letter target link
+    [ -d "$dd" ] || return 1
+    local IFS='|'
+    for entry in $drives; do
+        letter="${entry%%=*}"
+        target="${entry#*=}"
+        link="$dd/${letter}:"
+        if [ ! -L "$link" ] || [ "$(readlink "$link")" != "$target" ]; then
+            rm -rf -- "$link"
+            ln -s -- "$target" "$link" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
+
+if [ -n "$prefix" ] && [ -n "$drives" ]; then
+    link_drives || true
+    (
+        i=0
+        while [ "$i" -lt 600 ]; do
+            link_drives >/dev/null 2>&1 || true
+            sleep 0.5
+            i=$((i+1))
+        done
+    ) &
+fi
+
+exec "$@"
+EOS
+chmod +x "$INIT_SCRIPT"
+
 # --- SECTION 11: Monitored Execution ---
+BASH_BIN="$(readlink -f -- "$(type -P bash)")"
+
 set +e
-"$BWRAP_BIN" "${BWRAP_ARGS[@]}" "${UMU_BINDS[@]}" -- "$UMU_BIN" "${UMU_ARGS[@]}" &
+"$BWRAP_BIN" "${BWRAP_ARGS[@]}" "${MOUNT_ARGS[@]}" -- \
+    "$BASH_BIN" "$REAL_HOME/.sumu-init.sh" "$UMU_BIN" "${UMU_ARGS[@]}" &
 BWRAP_PID=$!
 wait "$BWRAP_PID"
 rc=$?

@@ -21,11 +21,23 @@
     (pkgs.writeShellScriptBin "setup-env" (builtins.readFile ./scripts/setup-env.sh))
 
     # 4. sumu-run
-	(pkgs.writeShellApplication {
-      name = "sumu-run";
-      runtimeInputs = [ pkgs.bubblewrap pkgs.coreutils pkgs.umu-launcher pkgs.xdg-dbus-proxy pkgs.procps ];
-      excludeShellChecks = [ "SC2329" ];
-      text = builtins.readFile ./scripts/sumu-run.sh;
-    })
+    (pkgs.writeShellApplication {
+        name = "sumu-run";
+        runtimeInputs = [ pkgs.bubblewrap pkgs.coreutils pkgs.umu-launcher pkgs.xdg-dbus-proxy pkgs.procps ];
+        excludeShellChecks = [ "SC2329" ];
+        text = builtins.readFile ./scripts/sumu-run.sh;
+      })
+
+    # 5. fs-diff-gui
+    (pkgs.writers.writePython3Bin "fs_diff_gui" {
+      libraries = [ pkgs.python3Packages.pyside6 ];
+    } ''
+      ${builtins.readFile ./scripts/fs_diff_constants.py}
+      ${builtins.readFile ./scripts/fs_diff_gui.py}
+    '')
+
+
   ];
+
+
 }

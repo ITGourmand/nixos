@@ -1,25 +1,45 @@
 { pkgs, ... }:
 let
   username = "gourmand";
-  customDirs = [
-    "Documents" "Images" "Bureau" "Projets" "Jeux"
-    ".config" ".local/share" ".local/state" ".local/script"
-    ".vscode" ".vscode-shared" ".copilot"
+
+  jsonFile = ./preservation/persisted.json;
+
+  persisted = if builtins.pathExists jsonFile
+              then builtins.fromJSON (builtins.readFile jsonFile)
+              else {};
+
+  customDirs = persisted.directories.custom or [
+    "Documents" "Images" "Bureau" "Projets" "Jeux" ".local/share"
   ];
-  secureDirs = [
+  secureDirs = persisted.directories.secure or [
     ".ssh" ".local/share/keyrings"
   ];
+
+  customFiles = persisted.files.custom or [
+    ".gitconfig" ".nvidia-settings-rc"
+  ];
+  secureFiles = persisted.files.secure or [];
+
+  mkDir = mode: dir: {
+    directory = "/home/${username}/${dir}";
+    user = username;
+    group = "users";
+    inherit mode;
+  };
+
+  mkFile = mode: file: {
+    file = "/home/${username}/${file}";
+    user = username;
+    group = "users";
+    inherit mode;
+  };
 in
 {
   preservation.preserveAt."/persist" = {
-    directories = [
-      #{ directory = "/home/${username}"; user = username; group = "users"; mode = "0700"; }
-    ] 
-    ++ (map (dir: { directory = "/home/${username}/${dir}"; user = username; group = "users"; mode = "0755"; }) customDirs)
-    ++ (map (dir: { directory = "/home/${username}/${dir}"; user = username; group = "users"; mode = "0700"; }) secureDirs);
+    directories = (map (mkDir "0755") customDirs)
+               ++ (map (mkDir "0700") secureDirs);
 
-    files = map (file: { file = "/home/${username}/${file}"; user = username; group = "users"; mode = "0644"; }) [
-      ".gitconfig" ".nvidia-settings-rc"
-    ];
+    files = (map (mkFile "0644") customFiles)
+         ++ (map (mkFile "0600") secureFiles);
   };
 }
