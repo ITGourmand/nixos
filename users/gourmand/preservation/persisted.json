@@ -1,24 +1,24 @@
 {
     "directories": {
         "custom": [
-            "Documents",
-            "Images",
-            "Bureau",
-            "Projets",
-            "Jeux",
-            "Android",
+            ".android",
             ".config",
+            ".copilot",
+            ".local/script",
             ".local/share",
             ".local/state",
-            ".local/script",
             ".vscode",
             ".vscode-shared",
-            ".copilot",
-            ".android"
+            "Android",
+            "Bureau",
+            "Documents",
+            "Images",
+            "Jeux",
+            "Projets"
         ],
         "secure": [
-            ".ssh",
-            ".local/share/keyrings"
+            ".local/share/keyrings",
+            ".ssh"
         ]
     },
     "files": {

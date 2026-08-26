@@ -6,6 +6,12 @@
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   # --- Pont pour exécutables génériques ---
+
+  programs.appimage = {
+    enable = true;
+    binfmt = true;
+  };
+
   programs.nix-ld.enable = true;
   programs.nix-ld.libraries = with pkgs; [
     # Bibliothèques de base essentielles

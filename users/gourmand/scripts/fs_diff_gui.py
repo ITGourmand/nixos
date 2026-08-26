@@ -21,7 +21,7 @@ def save_json(path: Path, data) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
+            json.dump(data, f, indent=4, ensure_ascii=False, sort_keys=True)
         return True
     except Exception as err:
         log.error("Failed to write %s : %s", path, err)
@@ -54,6 +54,7 @@ class PersistedStore:
         norm_p = os.path.normpath(path_str)
         if norm_p not in bucket:
             bucket.append(norm_p)
+            bucket.sort()
 
     def remove(self, section: str, sub: str, path_str: str) -> bool:
         bucket = self._bucket(section, sub)
@@ -64,6 +65,11 @@ class PersistedStore:
         return False
 
     def save(self) -> bool:
+        for section in self.data.values():
+            if isinstance(section, dict):
+                for bucket in section.values():
+                    if isinstance(bucket, list):
+                        bucket.sort()
         return save_json(self.path, self.data)
 
     def entries(self) -> Iterable[tuple]:
@@ -85,7 +91,7 @@ class IgnoredStore:
         self.path = path
         loaded = load_json(path, [])
         if isinstance(loaded, list):
-            self.data: list = [os.path.normpath(p) for p in loaded]
+            self.data: list = sorted([os.path.normpath(p) for p in loaded])
         else:
             self.data = []
 
@@ -93,6 +99,7 @@ class IgnoredStore:
         norm_p = os.path.normpath(path_str)
         if norm_p not in self.data:
             self.data.append(norm_p)
+            self.data.sort()
 
     def remove(self, path_str: str) -> bool:
         norm_p = os.path.normpath(path_str)
@@ -102,6 +109,7 @@ class IgnoredStore:
         return False
 
     def save(self) -> bool:
+        self.data.sort()
         return save_json(self.path, self.data)
 
 
@@ -234,13 +242,44 @@ def build_tree(headers: list, context_handler: Callable) -> QTreeWidget:
     tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
     tree.setContextMenuPolicy(Qt.CustomContextMenu)
     tree.customContextMenuRequested.connect(context_handler)
+    tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
     return tree
 
 
-def build_search_input(placeholder: str, tree: QTreeWidget) -> QLineEdit:
+def resolve_context_selection(
+    tree: QTreeWidget, pos,
+) -> list:
+    """Return the items a right-click at `pos` should act on.
+
+    If the right-clicked item is already part of the current multi-
+    selection, act on the whole selection (standard multi-select
+    behaviour). Otherwise, right-clicking selects just that item first,
+    matching how most file managers behave.
+    """
+    item = tree.itemAt(pos)
+    if item is None:
+        return []
+    selected = tree.selectedItems()
+    if item in selected and len(selected) > 1:
+        return selected
+    tree.setCurrentItem(item)
+    return [item]
+
+
+def build_search_input(
+    placeholder: str, tree: QTreeWidget, debounce_ms: int = 150
+) -> QLineEdit:
+    """Search box that filters `tree` after a short pause in typing
+    instead of on every keystroke — with hundreds of scanned items,
+    filtering on each keystroke visibly lags the UI."""
     field = QLineEdit()
     field.setPlaceholderText(placeholder)
-    field.textChanged.connect(lambda t: filter_tree(tree, t))
+
+    timer = QTimer(field)
+    timer.setSingleShot(True)
+    timer.timeout.connect(lambda: filter_tree(tree, field.text()))
+    field.textChanged.connect(lambda _t: timer.start(debounce_ms))
+
     return field
 
 
@@ -250,10 +289,105 @@ def add_menu_action(menu: QMenu, label: str, callback: Callable) -> None:
     menu.addAction(action)
 
 
-def walk_up_to_root(item: QTreeWidgetItem) -> QTreeWidgetItem:
-    while item.parent() is not None:
-        item = item.parent()
-    return item
+def find_owning_rule(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+    """Walk up from item to the nearest ancestor that is an actual rule
+    (NODE_DIRECT), not the absolute top of the tree.
+
+    A rule can be wrapped in one or more NODE_INTERMEDIATE nodes (e.g. a
+    rule on '.config/google-chrome' puts an intermediate '.config' node
+    above it) and/or contain several levels of NODE_SNOWBALL filesystem
+    children below it. Blindly walking to the tree's absolute root
+    overshoots past the rule and lands on an intermediate node with no
+    ROLE_SECTION data, which is what caused the 'cannot unpack
+    non-iterable NoneType object' crash.
+    """
+    node = item.parent()
+    while node is not None:
+        if node.data(0, ROLE_KIND) == NODE_DIRECT:
+            return node
+        node = node.parent()
+    return None
+
+
+def snapshot_tree_state(tree: QTreeWidget) -> tuple:
+    """Capture (all_paths, expanded_paths, selected_path) before a tree is
+    cleared and rebuilt, so the caller can restore what the user had open
+    and selected afterwards instead of collapsing everything back to
+    square one on every refresh."""
+    all_paths: set = set()
+    expanded: set = set()
+
+    def visit(item: QTreeWidgetItem) -> None:
+        path = item.data(0, ROLE_PATH)
+        if path:
+            all_paths.add(path)
+            if item.isExpanded():
+                expanded.add(path)
+        for i in range(item.childCount()):
+            visit(item.child(i))
+
+    for i in range(tree.topLevelItemCount()):
+        visit(tree.topLevelItem(i))
+
+    current = tree.currentItem()
+    selected_path = current.data(0, ROLE_PATH) if current else None
+    return all_paths, expanded, selected_path
+
+
+def find_item_by_path(
+    tree: QTreeWidget, path_str: str
+) -> Optional[QTreeWidgetItem]:
+    def visit(item: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+        if item.data(0, ROLE_PATH) == path_str:
+            return item
+        for i in range(item.childCount()):
+            found = visit(item.child(i))
+            if found is not None:
+                return found
+        return None
+
+    for i in range(tree.topLevelItemCount()):
+        found = visit(tree.topLevelItem(i))
+        if found is not None:
+            return found
+    return None
+
+
+def restore_tree_state(
+    tree: QTreeWidget, expanded: set, selected_path: Optional[str],
+    force_expand: frozenset = frozenset(),
+) -> None:
+    """Re-open folders that were open before the rebuild (or are brand
+    new top-level entries listed in force_expand), then re-select and
+    scroll to whatever the user had selected. If the exact item is gone
+    (e.g. it was just deleted), fall back to the nearest surviving
+    ancestor so the user doesn't lose their place in the tree."""
+
+    def visit(item: QTreeWidgetItem) -> None:
+        path = item.data(0, ROLE_PATH)
+        if path and (path in expanded or path in force_expand):
+            item.setExpanded(True)
+        for i in range(item.childCount()):
+            visit(item.child(i))
+
+    for i in range(tree.topLevelItemCount()):
+        visit(tree.topLevelItem(i))
+
+    if not selected_path:
+        return
+
+    parts = Path(selected_path).parts
+    for end in range(len(parts), 0, -1):
+        candidate = str(Path(*parts[:end]))
+        match = find_item_by_path(tree, candidate)
+        if match is not None:
+            parent = match.parent()
+            while parent is not None:
+                parent.setExpanded(True)
+                parent = parent.parent()
+            tree.setCurrentItem(match)
+            tree.scrollToItem(match)
+            return
 
 
 class ScannerThread(QThread):
@@ -412,7 +546,7 @@ class PersistManagerApp(QMainWindow):
 
         self._apply_theme(self.app_config.get("theme", "light"))
         self._build_ui()
-        self.start_scan()
+        self._refresh_everything()
 
     @staticmethod
     def _ensure_theme_files() -> None:
@@ -469,7 +603,7 @@ class PersistManagerApp(QMainWindow):
         top = QHBoxLayout()
         self.status_label = QLabel("Analysing filesystem...")
         self.refresh_btn = QPushButton("Refresh (Scan)")
-        self.refresh_btn.clicked.connect(self.start_scan)
+        self.refresh_btn.clicked.connect(self._refresh_everything)
         self.settings_btn = QPushButton("⚙")
         self.settings_btn.setToolTip("Settings")
         self.settings_btn.setFixedWidth(36)
@@ -517,6 +651,22 @@ class PersistManagerApp(QMainWindow):
         setattr(self, input_attr, line)
         add_row.addWidget(line)
 
+        browse_dir_btn = QPushButton("📁")
+        browse_dir_btn.setToolTip("Browse for a folder")
+        browse_dir_btn.setFixedWidth(36)
+        browse_dir_btn.clicked.connect(
+            lambda: self._browse_and_fill(line, "dir")
+        )
+        add_row.addWidget(browse_dir_btn)
+
+        browse_file_btn = QPushButton("📄")
+        browse_file_btn.setToolTip("Browse for a file")
+        browse_file_btn.setFixedWidth(36)
+        browse_file_btn.clicked.connect(
+            lambda: self._browse_and_fill(line, "file")
+        )
+        add_row.addWidget(browse_file_btn)
+
         if category_combo_attr:
             combo = QComboBox()
             combo.addItems(list(SECTION_MAP.keys()))
@@ -559,13 +709,42 @@ class PersistManagerApp(QMainWindow):
         self._reload_ignored_tab()
 
     def _reload_persisted_tab(self) -> None:
-        self.persisted_tree.setUpdatesEnabled(False)
-        self.persisted_tree.clear()
+        rules = [
+            (path_str, is_dir, f"{section}.{sub}", (section, sub))
+            for section, sub, is_dir, path_str in self.persisted.entries()
+        ]
+        self._build_rule_tree(
+            self.persisted_tree, self.persisted_search, rules
+        )
 
+    def _reload_ignored_tab(self) -> None:
+        rules = [
+            (path_str, True, LABEL_DIRECT, None)
+            for path_str in self.ignored.data
+        ]
+        self._build_rule_tree(self.ignored_tree, self.ignored_search, rules)
+
+    def _build_rule_tree(
+        self, tree: QTreeWidget, search_field: QLineEdit, rules: list,
+    ) -> None:
+        """Shared builder for the persisted/ignored management trees.
+
+        rules: list of (path_str, is_dir_hint, rule_label, section_info).
+        section_info is (section, sub) for persisted rules, or None for
+        ignored rules (which don't have a section/sub split).
+
+        Preserves whichever folders were expanded and whatever was
+        selected before the rebuild — clear()+rebuild would otherwise
+        collapse and deselect everything on every single refresh, which
+        happens after every persist/ignore/delete action.
+        """
+        _, expanded, selected_path = snapshot_tree_state(tree)
+
+        tree.setUpdatesEnabled(False)
+        tree.clear()
         nodes: dict = {}
-        entries = list(self.persisted.entries())
 
-        for section, sub, is_dir, path_str in entries:
+        for path_str, is_dir_hint, rule_label, section_info in rules:
             parts = Path(path_str).parts
             parent = None
             for i, part in enumerate(parts):
@@ -577,17 +756,15 @@ class PersistManagerApp(QMainWindow):
                     if full_p.exists():
                         is_d = full_p.is_dir()
                     else:
-                        is_d = is_dir if is_target_rule else True
+                        is_d = is_dir_hint if is_target_rule else True
 
                     icon = self.dir_icon if is_d else self.file_icon
 
                     if is_target_rule:
-                        label = f"{section}.{sub}"
-                        kind = NODE_DIRECT
-                        sec_info = (section, sub)
+                        label, kind = rule_label, NODE_DIRECT
+                        sec_info = section_info
                     else:
-                        label = "Intermediate path"
-                        kind = NODE_INTERMEDIATE
+                        label, kind = "Intermediate path", NODE_INTERMEDIATE
                         sec_info = None
 
                     node = make_tree_item(
@@ -595,83 +772,36 @@ class PersistManagerApp(QMainWindow):
                         path_str=current_rel, section_info=sec_info,
                     )
                     if parent is None:
-                        self.persisted_tree.addTopLevelItem(node)
+                        tree.addTopLevelItem(node)
                     else:
                         parent.addChild(node)
                     nodes[current_rel] = node
-                else:
-                    if is_target_rule:
-                        node = nodes[current_rel]
-                        node.setText(1, f"{section}.{sub}")
-                        node.setData(0, ROLE_KIND, NODE_DIRECT)
-                        node.setData(0, ROLE_SECTION, (section, sub))
+                elif is_target_rule:
+                    node = nodes[current_rel]
+                    node.setText(1, rule_label)
+                    node.setData(0, ROLE_KIND, NODE_DIRECT)
+                    if section_info is not None:
+                        node.setData(0, ROLE_SECTION, section_info)
 
                 parent = nodes[current_rel]
 
                 target_p = self.home_dir / current_rel
-                if is_target_rule and is_dir and target_p.exists():
+                if is_target_rule and target_p.is_dir():
                     populate_snowball(
                         nodes[current_rel], target_p,
                         self.home_dir, self.dir_icon, self.file_icon,
                     )
 
-        self.persisted_tree.setUpdatesEnabled(True)
-        filter_tree(self.persisted_tree, self.persisted_search.text())
-
-    def _reload_ignored_tab(self) -> None:
-        self.ignored_tree.setUpdatesEnabled(False)
-        self.ignored_tree.clear()
-
-        nodes: dict = {}
-        for path_str in self.ignored.data:
-            parts = Path(path_str).parts
-            parent = None
-            for i, part in enumerate(parts):
-                current_rel = str(Path(*parts[:i + 1]))
-                is_target_rule = (i == len(parts) - 1)
-
-                if current_rel not in nodes:
-                    full_p = self.home_dir / current_rel
-                    is_d = full_p.is_dir() if full_p.exists() else True
-                    icon = self.dir_icon if is_d else self.file_icon
-
-                    if is_target_rule:
-                        label = LABEL_DIRECT
-                        kind = NODE_DIRECT
-                    else:
-                        label = "Intermediate path"
-                        kind = NODE_INTERMEDIATE
-
-                    node = make_tree_item(
-                        part, label, icon, kind, path_str=current_rel
-                    )
-                    if parent is None:
-                        self.ignored_tree.addTopLevelItem(node)
-                    else:
-                        parent.addChild(node)
-                    nodes[current_rel] = node
-                else:
-                    if is_target_rule:
-                        node = nodes[current_rel]
-                        node.setText(1, LABEL_DIRECT)
-                        node.setData(0, ROLE_KIND, NODE_DIRECT)
-
-                parent = nodes[current_rel]
-
-                target_p = self.home_dir / current_rel
-                if is_target_rule and target_p.is_dir() and target_p.exists():
-                    populate_snowball(
-                        nodes[current_rel], target_p,
-                        self.home_dir, self.dir_icon, self.file_icon,
-                    )
-
-        self.ignored_tree.setUpdatesEnabled(True)
-        filter_tree(self.ignored_tree, self.ignored_search.text())
+        restore_tree_state(tree, expanded, selected_path)
+        tree.setUpdatesEnabled(True)
+        filter_tree(tree, search_field.text())
 
     def start_scan(self) -> None:
         self.status_label.setText("Scanning $HOME...")
         self.refresh_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
+
+        self._scan_tree_snapshot = snapshot_tree_state(self.scan_tree)
         self.scan_tree.clear()
 
         max_depth = (
@@ -693,8 +823,13 @@ class PersistManagerApp(QMainWindow):
             "right-click an item to act."
         )
 
+        all_paths_before, expanded, selected_path = getattr(
+            self, "_scan_tree_snapshot", (set(), set(), None)
+        )
+
         self.scan_tree.setUpdatesEnabled(False)
         nodes: dict = {}
+        new_top_level: set = set()
         for path_str, item_type, _ in items:
             parts = Path(path_str).parts
             parent = None
@@ -711,11 +846,20 @@ class PersistManagerApp(QMainWindow):
                     )
                     if parent is None:
                         self.scan_tree.addTopLevelItem(node)
-                        node.setExpanded(True)
+                        if current_rel not in all_paths_before:
+                            new_top_level.add(current_rel)
                     else:
                         parent.addChild(node)
                     nodes[current_rel] = node
                 parent = nodes[current_rel]
+
+        # Re-open whatever was open before (or is a brand new top-level
+        # folder, matching the old "always expand top level" behaviour),
+        # and re-select/scroll back to where the user was.
+        restore_tree_state(
+            self.scan_tree, expanded, selected_path,
+            force_expand=frozenset(new_top_level),
+        )
         self.scan_tree.setUpdatesEnabled(True)
         filter_tree(self.scan_tree, self.scan_search.text())
 
@@ -725,58 +869,247 @@ class PersistManagerApp(QMainWindow):
             self.app_config = dialog.result_config()
             save_json(APP_CONFIG_JSON, self.app_config)
             self._apply_theme(self.app_config.get("theme", "light"))
-            self.start_scan()
+            self._refresh_everything()
 
     def _show_scan_context_menu(self, pos) -> None:
-        item = self.scan_tree.itemAt(pos)
-        if not item:
-            return
-        path_str = item.data(0, ROLE_PATH)
-        item_type = item.data(0, ROLE_KIND)
-        if not path_str:
+        items = resolve_context_selection(self.scan_tree, pos)
+        entries = [
+            (it.data(0, ROLE_PATH), it.data(0, ROLE_KIND))
+            for it in items if it.data(0, ROLE_PATH)
+        ]
+        if not entries:
             return
 
         menu = QMenu(self)
-        prefix = "directories" if item_type == TYPE_DIR else "files"
-        for sub in ("custom", "secure"):
-            key = f"{prefix}.{sub}"
+        if len(entries) == 1:
+            path_str, item_type = entries[0]
+            prefix = "directories" if item_type == TYPE_DIR else "files"
+            for sub in ("custom", "secure"):
+                key = f"{prefix}.{sub}"
+                add_menu_action(
+                    menu, f"Persist in: {key}",
+                    lambda _=False, p=path_str, k=key: (
+                        self._persist_path(p, k)
+                    ),
+                )
+            menu.addSeparator()
             add_menu_action(
-                menu, f"Persist in: {key}",
-                lambda _=False, p=path_str, k=key: self._persist_path(p, k),
+                menu, "Ignore in: not-persisted.json",
+                lambda _=False, p=path_str: self._ignore_path(p),
             )
-        menu.addSeparator()
-        add_menu_action(
-            menu, "Ignore in: not-persisted.json",
-            lambda _=False, p=path_str: self._ignore_path(p),
-        )
+        else:
+            suffix = f" ({len(entries)} items)"
+            for sub in ("custom", "secure"):
+                add_menu_action(
+                    menu, f"Persist selected in: {sub}{suffix}",
+                    lambda _=False, s=sub, e=entries: (
+                        self._persist_paths(e, s)
+                    ),
+                )
+            menu.addSeparator()
+            add_menu_action(
+                menu, f"Ignore selected in: not-persisted.json{suffix}",
+                lambda _=False, e=entries: self._ignore_paths(e),
+            )
         menu.exec(self.scan_tree.mapToGlobal(pos))
+
+    def _persist_paths(self, entries: list, sub: str) -> None:
+        """Persist several (path_str, item_type) entries at once under
+        the given category ('custom' or 'secure'), each routed to the
+        directories/files bucket matching its own type."""
+        count = 0
+        for path_str, item_type in entries:
+            if not self._resolve_nixos_conflicts(path_str, "persisted"):
+                continue
+            section = "directories" if item_type == TYPE_DIR else "files"
+            self.persisted.add(section, sub, path_str)
+            count += 1
+        if count and self.persisted.save():
+            self.statusBar().showMessage(
+                f"{count} item(s) persisted ({sub}).", 4000
+            )
+            self._refresh_everything()
+
+    def _ignore_paths(self, entries: list) -> None:
+        """Add several (path_str, item_type) entries to not-persisted.json
+        at once."""
+        count = 0
+        for path_str, _item_type in entries:
+            if not self._resolve_nixos_conflicts(path_str, "ignored"):
+                continue
+            self.ignored.add(path_str)
+            count += 1
+        if count and self.ignored.save():
+            self.statusBar().showMessage(
+                f"{count} item(s) added to not-persisted.json.", 4000
+            )
+            self._refresh_everything()
 
     def _show_persisted_context_menu(self, pos) -> None:
         self._show_delete_menu(
-            self.persisted_tree, pos, self._smart_delete_persisted
+            self.persisted_tree, pos,
+            self._smart_delete_persisted, self._batch_delete_persisted,
         )
 
     def _show_ignored_context_menu(self, pos) -> None:
         self._show_delete_menu(
-            self.ignored_tree, pos, self._smart_delete_ignored
+            self.ignored_tree, pos,
+            self._smart_delete_ignored, self._batch_delete_ignored,
         )
 
     def _show_delete_menu(
-        self, tree: QTreeWidget, pos, handler: Callable
+        self, tree: QTreeWidget, pos,
+        single_handler: Callable, batch_handler: Callable,
     ) -> None:
-        item = tree.itemAt(pos)
-        if not item:
+        items = resolve_context_selection(tree, pos)
+        valid = [
+            it for it in items
+            if it.data(0, ROLE_PATH)
+            and it.data(0, ROLE_KIND) != NODE_INTERMEDIATE
+        ]
+        if not valid:
             return
-        path_str = item.data(0, ROLE_PATH)
-        kind = item.data(0, ROLE_KIND)
-        if not path_str or kind == NODE_INTERMEDIATE:
-            return
+
         menu = QMenu(self)
-        add_menu_action(
-            menu, f"Delete rule for '{path_str}'",
-            lambda: handler(item),
-        )
+
+        if len(valid) == 1:
+            item = valid[0]
+            path_str = item.data(0, ROLE_PATH)
+            kind = item.data(0, ROLE_KIND)
+            if kind == NODE_DIRECT:
+                label = f"Delete rule for '{path_str}'"
+                confirm_msg = f"Remove the rule for '{path_str}'?"
+            else:
+                # This node is just a filesystem preview under an
+                # ancestor rule (a NODE_SNOWBALL item), not a rule of
+                # its own — say so explicitly, since assuming it's a
+                # standalone rule is what caused the original crash
+                # further down the line.
+                owner = find_owning_rule(item)
+                owner_path = owner.data(0, ROLE_PATH) if owner else path_str
+                label = f"Exclude '{path_str}' from rule '{owner_path}'"
+                confirm_msg = (
+                    f"'{path_str}' isn't a rule on its own — it's part "
+                    f"of the rule on '{owner_path}'.\n\nThis will remove "
+                    f"that rule and re-create individual rules for "
+                    f"everything else under '{owner_path}', excluding "
+                    f"'{path_str}'. Continue?"
+                )
+            add_menu_action(
+                menu, label,
+                lambda: self._confirm_and_run(
+                    confirm_msg, single_handler, item
+                ),
+            )
+        else:
+            label = f"Delete {len(valid)} selected rule(s)"
+            confirm_msg = (
+                f"Remove {len(valid)} selected item(s)? Any that are "
+                f"just filesystem previews under a rule will have that "
+                f"rule split into individual entries, excluding them. "
+                f"This cannot be undone."
+            )
+            add_menu_action(
+                menu, label,
+                lambda: self._confirm_and_run_batch(
+                    confirm_msg, batch_handler, valid
+                ),
+            )
         menu.exec(tree.mapToGlobal(pos))
+
+    def _confirm_and_run(
+        self, message: str, handler: Callable, item: QTreeWidgetItem
+    ) -> None:
+        reply = QMessageBox.question(
+            self, "Confirm deletion", message,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            handler(item)
+
+    def _confirm_and_run_batch(
+        self, message: str, handler: Callable, items: list
+    ) -> None:
+        reply = QMessageBox.question(
+            self, "Confirm deletion", message,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            handler(items)
+
+    def _batch_delete_persisted(self, items: list) -> None:
+        """Delete several persisted-tab selections at once. Direct rules
+        are removed outright; snowball previews are grouped by their
+        owning rule so each rule is only split into individual entries
+        once, excluding every selected item under it together."""
+        direct_items = [
+            it for it in items if it.data(0, ROLE_KIND) == NODE_DIRECT
+        ]
+        direct_paths = {it.data(0, ROLE_PATH) for it in direct_items}
+
+        snowball_by_root: dict = {}
+        for it in items:
+            if it.data(0, ROLE_KIND) != NODE_SNOWBALL:
+                continue
+            root = find_owning_rule(it)
+            if root is None or root.data(0, ROLE_PATH) in direct_paths:
+                continue  # whole rule is already being deleted outright
+            snowball_by_root.setdefault(root, set()).add(
+                it.data(0, ROLE_PATH)
+            )
+
+        count = 0
+        for it in direct_items:
+            section, sub = it.data(0, ROLE_SECTION)
+            if self.persisted.remove(section, sub, it.data(0, ROLE_PATH)):
+                count += 1
+
+        for root, targets in snowball_by_root.items():
+            root_path = root.data(0, ROLE_PATH)
+            section, sub = root.data(0, ROLE_SECTION)
+            if (self.home_dir / root_path).is_dir():
+                self.persisted.remove(section, sub, root_path)
+                self._reexpand_persisted_except(root_path, targets, sub)
+                count += len(targets)
+
+        self.persisted.save()
+        self.statusBar().showMessage(f"{count} rule(s) removed.", 4000)
+        self._refresh_everything()
+
+    def _batch_delete_ignored(self, items: list) -> None:
+        """Same as _batch_delete_persisted, for the not-persisted.json
+        tab (single flat list, no section/sub split)."""
+        direct_items = [
+            it for it in items if it.data(0, ROLE_KIND) == NODE_DIRECT
+        ]
+        direct_paths = {it.data(0, ROLE_PATH) for it in direct_items}
+
+        snowball_by_root: dict = {}
+        for it in items:
+            if it.data(0, ROLE_KIND) != NODE_SNOWBALL:
+                continue
+            root = find_owning_rule(it)
+            if root is None or root.data(0, ROLE_PATH) in direct_paths:
+                continue
+            snowball_by_root.setdefault(root, set()).add(
+                it.data(0, ROLE_PATH)
+            )
+
+        count = 0
+        for it in direct_items:
+            if self.ignored.remove(it.data(0, ROLE_PATH)):
+                count += 1
+
+        for root, targets in snowball_by_root.items():
+            root_path = root.data(0, ROLE_PATH)
+            if (self.home_dir / root_path).is_dir():
+                self.ignored.remove(root_path)
+                self._reexpand_ignored_except(root_path, targets)
+                count += len(targets)
+
+        self.ignored.save()
+        self.statusBar().showMessage(f"{count} rule(s) removed.", 4000)
+        self._refresh_everything()
 
     def _resolve_nixos_conflicts(
         self, path_str: str, target_store: str
@@ -837,6 +1170,9 @@ class PersistManagerApp(QMainWindow):
         section, sub = SECTION_MAP[section_key]
         self.persisted.add(section, sub, path_str)
         if self.persisted.save():
+            self.statusBar().showMessage(
+                f"Persisted '{path_str}' ({section_key}).", 4000
+            )
             self._refresh_everything()
 
     def _ignore_path(self, path_str: str) -> None:
@@ -844,11 +1180,43 @@ class PersistManagerApp(QMainWindow):
             return
         self.ignored.add(path_str)
         if self.ignored.save():
+            self.statusBar().showMessage(
+                f"'{path_str}' added to not-persisted.json.", 4000
+            )
             self._refresh_everything()
 
     def _refresh_everything(self) -> None:
         self._reload_all_tabs()
         self.start_scan()
+
+    def _browse_and_fill(self, line_edit: QLineEdit, mode: str) -> None:
+        """Open the system file/folder picker and fill line_edit with the
+        chosen path, expressed relative to $HOME like every other path
+        in this app. mode is 'dir' or 'file' — Qt's native dialog can't
+        pick both at once, hence the two separate buttons."""
+        if mode == "dir":
+            chosen = QFileDialog.getExistingDirectory(
+                self, "Choose a folder", str(self.home_dir),
+            )
+        else:
+            chosen, _ = QFileDialog.getOpenFileName(
+                self, "Choose a file", str(self.home_dir),
+            )
+        if not chosen:
+            return
+
+        try:
+            rel_path = Path(chosen).resolve().relative_to(
+                self.home_dir.resolve()
+            )
+        except ValueError:
+            QMessageBox.warning(
+                self, "Invalid path",
+                f"The chosen path must be inside your home directory "
+                f"({self.home_dir}).",
+            )
+            return
+        line_edit.setText(str(rel_path))
 
     def _add_manual_persisted(self) -> None:
         path_str = self.persisted_input.text().strip()
@@ -871,15 +1239,26 @@ class PersistManagerApp(QMainWindow):
         if kind == NODE_DIRECT:
             section, sub = item.data(0, ROLE_SECTION)
             self.persisted.remove(section, sub, path_str)
+            message = f"Rule for '{path_str}' removed."
         else:
-            root = walk_up_to_root(item)
+            root = find_owning_rule(item)
+            if root is None:
+                log.error(
+                    "No owning persisted rule found above '%s'; "
+                    "not deleting.", path_str,
+                )
+                return
             root_path = root.data(0, ROLE_PATH)
             section, sub = root.data(0, ROLE_SECTION)
+            message = f"'{path_str}' excluded from '{root_path}'."
             if (self.home_dir / root_path).is_dir():
                 self.persisted.remove(section, sub, root_path)
-                self._reexpand_persisted_except(root_path, path_str, sub)
+                self._reexpand_persisted_except(
+                    root_path, {path_str}, sub
+                )
 
         self.persisted.save()
+        self.statusBar().showMessage(message, 4000)
         self._refresh_everything()
 
     def _smart_delete_ignored(self, item: QTreeWidgetItem) -> None:
@@ -888,19 +1267,35 @@ class PersistManagerApp(QMainWindow):
 
         if kind == NODE_DIRECT:
             self.ignored.remove(path_str)
+            message = f"Rule for '{path_str}' removed."
         else:
-            root = walk_up_to_root(item)
+            root = find_owning_rule(item)
+            if root is None:
+                log.error(
+                    "No owning ignored rule found above '%s'; "
+                    "not deleting.", path_str,
+                )
+                return
             root_path = root.data(0, ROLE_PATH)
+            message = f"'{path_str}' excluded from '{root_path}'."
             if (self.home_dir / root_path).is_dir():
                 self.ignored.remove(root_path)
-                self._reexpand_ignored_except(root_path, path_str)
+                self._reexpand_ignored_except(root_path, {path_str})
 
         self.ignored.save()
+        self.statusBar().showMessage(message, 4000)
         self._refresh_everything()
 
-    def _reexpand_persisted_except(
-        self, root_rel: str, target_rel: str, sub: str
+    def _reexpand_except(
+        self, root_rel: str, target_rels: set, add_child: Callable,
     ) -> None:
+        """Walk everything under root_rel except target_rels, re-adding
+        each sibling as its own individual rule via
+        add_child(child_rel, is_dir). Shared by the persisted and ignored
+        'exclude one-or-more items from a directory rule' flows.
+        target_rels can hold several paths at once so that excluding
+        multiple items from the same rule (multi-select delete) is done
+        in a single pass instead of re-expanding once per item."""
         root_full = self.home_dir / root_rel
         if not root_full.is_dir():
             return
@@ -910,32 +1305,32 @@ class PersistManagerApp(QMainWindow):
             return
         for child in children:
             child_rel = str(child.relative_to(self.home_dir))
-            if child_rel == target_rel:
+            if child_rel in target_rels:
                 continue
-            if is_strict_ancestor(child_rel, target_rel):
-                self._reexpand_persisted_except(child_rel, target_rel, sub)
+            nested = {
+                t for t in target_rels if is_strict_ancestor(child_rel, t)
+            }
+            if nested:
+                self._reexpand_except(child_rel, nested, add_child)
                 continue
-            section = "directories" if child.is_dir() else "files"
+            add_child(child_rel, child.is_dir())
+
+    def _reexpand_persisted_except(
+        self, root_rel: str, target_rels: set, sub: str
+    ) -> None:
+        def add_child(child_rel: str, is_dir: bool) -> None:
+            section = "directories" if is_dir else "files"
             self.persisted.add(section, sub, child_rel)
 
+        self._reexpand_except(root_rel, target_rels, add_child)
+
     def _reexpand_ignored_except(
-        self, root_rel: str, target_rel: str
+        self, root_rel: str, target_rels: set
     ) -> None:
-        root_full = self.home_dir / root_rel
-        if not root_full.is_dir():
-            return
-        try:
-            children = list(root_full.iterdir())
-        except (PermissionError, FileNotFoundError):
-            return
-        for child in children:
-            child_rel = str(child.relative_to(self.home_dir))
-            if child_rel == target_rel:
-                continue
-            if is_strict_ancestor(child_rel, target_rel):
-                self._reexpand_ignored_except(child_rel, target_rel)
-                continue
-            self.ignored.add(child_rel)
+        self._reexpand_except(
+            root_rel, target_rels,
+            lambda child_rel, _is_dir: self.ignored.add(child_rel),
+        )
 
 
 if __name__ == "__main__":

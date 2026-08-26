@@ -7,15 +7,15 @@ from pathlib import Path
 from string import Template
 from typing import Callable, Iterable, Optional
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtGui import (
     QAction, QColor, QIcon, QPainter, QPainterPath, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu,
-    QMessageBox, QProgressBar, QPushButton, QSpinBox, QTabWidget,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
+    QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSpinBox,
+    QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 CURRENT_USER = os.getenv("USER") or getpass.getuser()
@@ -46,10 +46,6 @@ SECTION_MAP = {
     "files.custom":       ("files",       "custom"),
     "files.secure":       ("files",       "secure"),
 }
-ROLE_PATH = Qt.UserRole
-ROLE_KIND = Qt.UserRole + 1
-ROLE_SECTION = Qt.UserRole + 2
-
 NODE_DIRECT = "direct"
 NODE_INTERMEDIATE = "intermediate"
 NODE_SNOWBALL = "snowball"
