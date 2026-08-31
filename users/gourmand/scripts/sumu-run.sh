@@ -341,9 +341,6 @@ BWRAP_ARGS+=(
     --ro-bind-try /var/lib/dbus/machine-id /var/lib/dbus/machine-id
     --ro-bind-try /etc/localtime /etc/localtime
     --ro-bind-try /etc/zoneinfo /etc/zoneinfo
-    --ro-bind-try /etc/ssl /etc/ssl
-    --ro-bind-try /etc/ca-certificates /etc/ca-certificates
-    --ro-bind-try /etc/pki /etc/pki
     --ro-bind-try /etc/fonts /etc/fonts
     --ro-bind-try /etc/os-release /etc/os-release
     --ro-bind-try /etc/alsa /etc/alsa
@@ -360,6 +357,24 @@ BWRAP_ARGS+=(
 
     --symlink /proc/self/mounts /etc/mtab
 )
+
+# --- SECTION 3.b: CA Certificates (minimal, symlink-safe) ---
+bind_ca_bundle() {
+    local dest="$1" real
+    real="$(readlink -f -- "$dest" 2>/dev/null || true)"
+    [[ -n "$real" && -f "$real" ]] || return 0
+    BWRAP_ARGS+=(--dir "$(dirname "$dest")" --ro-bind-try "$real" "$dest")
+}
+
+for cert_path in \
+    /etc/ssl/certs/ca-certificates.crt \
+    /etc/ssl/certs/ca-bundle.crt \
+    /etc/pki/tls/certs/ca-bundle.crt \
+    /etc/ssl/cert.pem \
+    /etc/ssl/ca-bundle.pem; do
+    bind_ca_bundle "$cert_path"
+done
+unset -f bind_ca_bundle
 
 # DNS Resolution setup
 if [[ "$ALLOW_NET" == true ]]; then
