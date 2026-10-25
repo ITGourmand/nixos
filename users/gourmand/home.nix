@@ -34,10 +34,11 @@ in {
     heroic
     antigravity-ide
     android-studio
+    jetbrains.idea
     
     icoutils
   ];  
-
+  
   xdg.dataFile."thumbnailers/exe.thumbnailer".text = ''
     [Thumbnailer Entry]
     TryExec=${pkgs.icoutils}/bin/wrestool
@@ -77,6 +78,16 @@ in {
   programs.bash = {
     enable = true;
     initExtra = "fastfetch";
+  };
+
+  programs.git = {
+    enable = true;
+    settings = {
+      user = {
+        name = "ITGourmand";
+        email = "contactpro.gourmand@gmail.com";
+      };
+    };
   };
 
   programs.home-manager.enable = true;

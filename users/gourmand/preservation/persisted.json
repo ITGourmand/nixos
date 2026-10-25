@@ -23,7 +23,6 @@
     },
     "files": {
         "custom": [
-            ".gitconfig",
             ".nvidia-settings-rc"
         ],
         "secure": []

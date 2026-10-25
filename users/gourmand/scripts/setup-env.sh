@@ -102,8 +102,11 @@ else
     \$(error TARGET_OS inconnu. Utilisez "linux" ou "windows")
 endif
 
-SRCS    := \$(wildcard \$(SRC_DIR)/*.$ext)
-STEMS   := \$(patsubst \$(SRC_DIR)/%.$ext,%,\$(SRCS))
+INC_SRCS   := \$(wildcard \$(INC_DIR)/*.$ext)
+INC_OBJS   := \$(patsubst \$(INC_DIR)/%.$ext,\$(OBJ_DIR)/inc_%.o,\$(INC_SRCS))
+
+APP_SRCS   := \$(wildcard \$(SRC_DIR)/*.$ext)
+STEMS      := \$(patsubst \$(SRC_DIR)/%.$ext,%,\$(APP_SRCS))
 
 .DEFAULT_GOAL := all
 all: \$(STEMS:%=\$(BIN_DIR)/%\$(EXE_EXT))
@@ -119,12 +122,12 @@ ifneq (\$(call GET_RC,\$(1)),)
 	@echo "🎨 Compiling Resource [\$(call GET_RC,\$(1))] pour \$(1) -> \$\$(@)"
 	\$\$(WINDRES) \$\$< -O coff -o \$\$(@)
 
-\$(BIN_DIR)/\$(1)\$(EXE_EXT): \$(OBJ_DIR)/\$(1).o \$(OBJ_DIR)/\$(1)_resource.o
+\$(BIN_DIR)/\$(1)\$(EXE_EXT): \$(OBJ_DIR)/\$(1).o \$(INC_OBJS) \$(OBJ_DIR)/\$(1)_resource.o
 	@mkdir -p \$\$(@D)
 	@echo "🔗 Linking [\$(TARGET_OS)] -> \$\$(@)"
 	\$\$(CC) \$\$^ -o \$\$(@) \$\$(LDFLAGS)
 else
-\$(BIN_DIR)/\$(1)\$(EXE_EXT): \$(OBJ_DIR)/\$(1).o
+\$(BIN_DIR)/\$(1)\$(EXE_EXT): \$(OBJ_DIR)/\$(1).o \$(INC_OBJS)
 	@mkdir -p \$\$(@D)
 	@echo "🔗 Linking [\$(TARGET_OS)] -> \$\$(@)"
 	\$\$(CC) \$\$^ -o \$\$(@) \$\$(LDFLAGS)
@@ -134,7 +137,7 @@ endef
 else
 
 define BUILD_TARGET
-\$(BIN_DIR)/\$(1)\$(EXE_EXT): \$(OBJ_DIR)/\$(1).o
+\$(BIN_DIR)/\$(1)\$(EXE_EXT): \$(OBJ_DIR)/\$(1).o \$(INC_OBJS)
 	@mkdir -p \$\$(@D)
 	@echo "🔗 Linking [\$(TARGET_OS)] -> \$\$(@)"
 	\$\$(CC) \$\$^ -o \$\$(@) \$\$(LDFLAGS)
@@ -144,7 +147,12 @@ endif
 
 \$(OBJ_DIR)/%.o: \$(SRC_DIR)/%.$ext
 	@mkdir -p \$(@D)
-	@echo "🔨 Compiling [\$(TARGET_OS)] -> \$<"
+	@echo "🔨 Compiling App [\$(TARGET_OS)] -> \$<"
+	\$(CC) \$(CFLAGS) -c \$< -o \$@
+
+\$(OBJ_DIR)/inc_%.o: \$(INC_DIR)/%.$ext
+	@mkdir -p \$(@D)
+	@echo "🔨 Compiling Lib [\$(TARGET_OS)] -> \$<"
 	\$(CC) \$(CFLAGS) -c \$< -o \$@
 
 \$(foreach stem,\$(STEMS),\$(eval \$(call BUILD_TARGET,\$(stem))))

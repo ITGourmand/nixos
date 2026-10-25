@@ -3,19 +3,14 @@
   programs.bash.shellAliases = {
     ll = "ls -lah --color=auto";
     gcm = "git commit -m";
-    scode = "sudo code --user-data-dir --no-sandbox";
   };
 
   home.packages = [
     # 1. nix-show
     (pkgs.writeShellScriptBin "nix-show" (builtins.readFile ./scripts/nix-show.sh))
 
-    # 2. exe-thumbnailer
-    (pkgs.writeShellApplication {
-      name = "exe-thumbnailer";
-      runtimeInputs = [ pkgs.icoutils pkgs.findutils pkgs.coreutils ];
-      text = builtins.readFile ./scripts/exe-thumbnailer.sh;
-    })
+    # 2. scode
+    (pkgs.writeShellScriptBin "scode" (builtins.readFile ./scripts/scode.sh))
 
     # 3. setup-env
     (pkgs.writeShellScriptBin "setup-env" (builtins.readFile ./scripts/setup-env.sh))

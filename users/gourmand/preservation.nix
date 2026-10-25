@@ -16,7 +16,7 @@ let
   ];
 
   customFiles = persisted.files.custom or [
-    ".gitconfig" ".nvidia-settings-rc"
+    ".nvidia-settings-rc"
   ];
   secureFiles = persisted.files.secure or [];
 
